@@ -555,6 +555,87 @@ static UIImage * AFImageWithDataAtScale(NSData *data, CGFloat scale) {
     return [[UIImage alloc] initWithCGImage:[image CGImage] scale:scale orientation:image.imageOrientation];
 }
 
+static NSTimeInterval AFFrameDurationFromGitInfo(NSDictionary *gitInfo) {
+    NSTimeInterval gifDefaultFrameDuration = 0.1;
+    
+    if (gitInfo == nil) {
+        return gifDefaultFrameDuration;
+    }
+    
+    NSNumber *unclampedDelayTime = gitInfo[(NSString *)kCGImagePropertyGIFUnclampedDelayTime];
+    
+    NSNumber *delayTime = gitInfo[(NSString *)kCGImagePropertyGIFDelayTime];
+    
+    NSNumber *duration = unclampedDelayTime != nil ? unclampedDelayTime : delayTime;
+    
+    if (duration == nil) {
+        return gifDefaultFrameDuration;
+    }
+    
+    return duration.doubleValue > 0.011 ? duration.doubleValue : gifDefaultFrameDuration;
+}
+
+static NSDictionary * AFDecodeGIFFromImageSourceForOptions(CGImageSourceRef imageSource, CFDictionaryRef options, CGFloat scale) {
+    size_t frameCount = CGImageSourceGetCount(imageSource);
+    
+    if (frameCount <= 1) {
+        return nil;
+    }
+    
+    NSMutableArray<UIImage *> *images = [[NSMutableArray alloc] init];
+    
+    NSTimeInterval gifDuration = 0.0;
+    
+    for (size_t i = 0; i < frameCount; i++) {
+        CGImageRef imageRef = CGImageSourceCreateImageAtIndex(imageSource,
+                                                              (size_t)i,
+                                                              options);
+        
+        if (imageRef == nil) {
+            return nil;
+        }
+        
+        CFDictionaryRef properties = CGImageSourceCopyPropertiesAtIndex(imageSource,
+                                                                        (size_t)i,
+                                                                        options);
+        
+        NSDictionary *gitInfo = [(__bridge NSDictionary *)properties valueForKey:(NSString *)kCGImagePropertyGIFDictionary];
+        
+        gifDuration += AFFrameDurationFromGitInfo(gitInfo);
+        
+        UIImage *image = [[UIImage alloc] initWithCGImage:imageRef
+                                                    scale:scale
+                                              orientation:UIImageOrientationUp];
+        
+        [images addObject:image];
+    }
+    
+    return [[NSDictionary alloc] initWithObjectsAndKeys:images, @"images", [NSNumber numberWithDouble:gifDuration], @"duration", nil];
+}
+
+static UIImage * AFAnimatedImageFromResponseWithData(NSData *data, CGFloat scale) {
+    NSDictionary *options = [[NSDictionary alloc] initWithObjectsAndKeys:@"kUTTypeGIF", kCGImageSourceTypeIdentifierHint, [NSNumber numberWithBool:YES], kCGImageSourceShouldCache, nil];
+    
+    CGImageSourceRef imageSource = CGImageSourceCreateWithData((CFDataRef)data, (__bridge CFDictionaryRef)options);
+    
+    NSDictionary *decodeGifInfo = AFDecodeGIFFromImageSourceForOptions(imageSource,
+                                                                       (__bridge CFDictionaryRef)(options),
+                                                                       scale);
+    
+    if (decodeGifInfo == nil) {
+        return nil;
+    }
+    
+    NSArray *images = decodeGifInfo[@"images"];
+    
+    NSTimeInterval duration = [decodeGifInfo[@"duration"] doubleValue];
+    
+    UIImage *animatedImage = [UIImage animatedImageWithImages: images
+                                                     duration: duration];
+    
+    return animatedImage;
+}
+
 static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *response, NSData *data, CGFloat scale) {
     if (!data || [data length] == 0) {
         return nil;
@@ -577,6 +658,12 @@ static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *r
                 CGImageRelease(imageRef);
                 imageRef = NULL;
             }
+        }
+    } else if ([response.MIMEType isEqualToString:@"image/gif"]) {
+        UIImage *gifImage = AFAnimatedImageFromResponseWithData(data, scale);
+        
+        if (gifImage != nil) {
+            return gifImage;
         }
     }
 
